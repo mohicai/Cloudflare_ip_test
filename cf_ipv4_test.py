@@ -72,10 +72,10 @@ async def main():
     start_time = time.time()
 
     # 测试代理
-    proxy_ok = await test_proxy()
-    if not proxy_ok:
-        print("[FATAL] 代理不可用，退出程序")
-        return
+    #proxy_ok = await test_proxy()
+   # if not proxy_ok:
+    #    print("[FATAL] 代理不可用，退出程序")
+   #     return
 
     # 获取 CF IPv4 CIDR 列表
     v4_cidrs = await fetch_ips(CF_IPS_V4)
