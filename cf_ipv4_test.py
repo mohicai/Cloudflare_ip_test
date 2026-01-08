@@ -2,14 +2,14 @@ import aiohttp
 import asyncio
 import ipaddress
 import time
-from tqdm import tqdm
+import sys
 
 CF_IPS_V4 = "https://www.cloudflare.com/ips-v4"
 PROXY_URL = "http://f2O9Sw2sqd:zbZEBEqbho@120.230.229.77:35931"
 
 TIMEOUT = 3
 CONCURRENCY = 50
-MAX_IPS = 100000
+MAX_IPS = 1000
 
 
 async def fetch_ips(url):
@@ -58,7 +58,8 @@ async def test_ip(ip):
         code = stdout.decode().strip()
         err = stderr.decode().strip()
 
-        if code:
+        # 000 表示失败
+        if code and code != "000":
             return ip, True, err
         else:
             return ip, False, err or "No response"
@@ -111,14 +112,7 @@ async def main():
     success = 0
     fail = 0
 
-    pbar = tqdm(
-        asyncio.as_completed(tasks),
-        total=len(tasks),
-        desc="测试进度",
-        dynamic_ncols=True
-    )
-
-    for f in pbar:
+    for idx, f in enumerate(asyncio.as_completed(tasks), 1):
         ip, ok, err = await f
 
         if ok:
@@ -129,17 +123,16 @@ async def main():
             fail += 1
             blocked_file.write(ip + "\n")
             blocked_file.flush()
-
             if err:
                 error_log.write(f"{ip} -> {err}\n")
                 error_log.flush()
 
-        # 更新进度条显示
         rate = success / (success + fail) * 100
-        pbar.set_description(
-            f"测试进度 | 成功: {success} | 失败: {fail} | 成功率: {rate:.2f}%"
-        )
+        msg = f"\r测试进度 | 成功: {success} | 失败: {fail} | 成功率: {rate:.2f}% ({idx}/{len(tasks)})"
+        sys.stdout.write(msg)
+        sys.stdout.flush()
 
+    print()  # 最后换行
     blocked_file.close()
     unblocked_file.close()
     error_log.close()
