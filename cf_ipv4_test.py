@@ -2,8 +2,8 @@ import aiohttp
 import asyncio
 import ipaddress
 import time
-import sys
 import random
+from tqdm import tqdm
 
 CF_IPS_V4 = "https://www.cloudflare.com/ips-v4"
 PROXY_URL = "http://f2O9Sw2sqd:zbZEBEqbho@120.230.229.77:35831"
@@ -11,6 +11,7 @@ PROXY_URL = "http://f2O9Sw2sqd:zbZEBEqbho@120.230.229.77:35831"
 TIMEOUT = 3
 CONCURRENCY = 50
 MAX_IPS = 1000
+REFRESH_INTERVAL = 5   # 刷新间隔（秒），可改成 10、30 等
 
 
 async def fetch_ips(url):
@@ -59,7 +60,6 @@ async def test_ip(ip):
         code = stdout.decode().strip()
         err = stderr.decode().strip()
 
-        # 000 表示失败
         if code and code != "000":
             return ip, True, err
         else:
@@ -72,17 +72,14 @@ async def test_ip(ip):
 async def main():
     start_time = time.time()
 
-    # 测试代理
     proxy_ok = await test_proxy()
     if not proxy_ok:
         print("[FATAL] 代理不可用，退出程序")
         return
 
-    # 获取 CF IPv4 CIDR 列表
     v4_cidrs = await fetch_ips(CF_IPS_V4)
     print(f"[INFO] 获取到 {len(v4_cidrs)} 个 IPv4 段")
 
-    # 展开 IP
     all_ips = []
     ip_count = 0
     for cidr in v4_cidrs:
@@ -105,17 +102,18 @@ async def main():
 
     tasks = [sem_test(ip) for ip in all_ips]
 
-    # 实时写入文件
     blocked_file = open("blocked.txt", "a")
     unblocked_file = open("unblocked.txt", "a")
     error_log = open("curl_errors.log", "a")
 
     success = 0
     fail = 0
-    last_print = time.time()
+    last_refresh = time.time()
 
     unblocked_list = []
     blocked_list = []
+
+    pbar = tqdm(total=len(tasks), desc="测试进度", dynamic_ncols=True)
 
     for idx, f in enumerate(asyncio.as_completed(tasks), 1):
         ip, ok, err = await f
@@ -134,21 +132,16 @@ async def main():
                 error_log.write(f"{ip} -> {err}\n")
                 error_log.flush()
 
-        # 每隔 5 秒打印一次进度 + 随机样本
+        # 每隔 REFRESH_INTERVAL 秒刷新一次进度条
         now = time.time()
-        if now - last_print >= 5:
+        if now - last_refresh >= REFRESH_INTERVAL:
             rate = success / (success + fail) * 100
-            print(f"[INFO] 测试进度 | 成功: {success} | 失败: {fail} | 成功率: {rate:.2f}% ({idx}/{len(tasks)})")
+            pbar.update(idx - pbar.n)  # 更新到当前进度
+            pbar.set_description(f"成功: {success} | 失败: {fail} | 成功率: {rate:.2f}%")
+            last_refresh = now
 
-            if unblocked_list:
-                sample_success = random.sample(unblocked_list, min(2, len(unblocked_list)))
-                print(f"[INFO] 随机成功样本: {', '.join(sample_success)}")
-
-            if blocked_list:
-                sample_fail = random.sample(blocked_list, min(2, len(blocked_list)))
-                print(f"[INFO] 随机失败样本: {', '.join(sample_fail)}")
-
-            last_print = now
+    pbar.update(len(tasks) - pbar.n)
+    pbar.close()
 
     blocked_file.close()
     unblocked_file.close()
@@ -158,7 +151,6 @@ async def main():
     print(f"[SUMMARY] 成功: {success} 失败: {fail} 成功率: {success/(success+fail)*100:.2f}%")
     print("[INFO] 结果已实时写入 blocked.txt / unblocked.txt / curl_errors.log")
 
-    # 随机打印 10 个成功和失败的 IP
     if unblocked_list:
         sample_success = random.sample(unblocked_list, min(10, len(unblocked_list)))
         print(f"\n[INFO] 随机成功 IP 示例（共 {len(unblocked_list)} 个）：")
