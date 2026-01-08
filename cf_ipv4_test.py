@@ -2,6 +2,7 @@ import aiohttp
 import asyncio
 import ipaddress
 import time
+from tqdm import tqdm
 
 # Cloudflare IPv4 段列表
 CF_IPS_V4 = "https://www.cloudflare.com/ips-v4"
@@ -45,7 +46,6 @@ async def test_proxy():
 
 async def test_ip(ip, session):
     """测试单个 IP 是否可访问"""
-    print(f"[DEBUG] 开始测试 IP: {ip}")
     try:
         async with session.get(
             f"https://{ip}",
@@ -54,13 +54,10 @@ async def test_ip(ip, session):
             ssl=False
         ) as resp:
             if resp.status == 200:
-                print(f"[PASS] IP {ip} 可访问")
                 return ip, True
             else:
-                print(f"[FAIL] IP {ip} 返回状态码 {resp.status}")
                 return ip, False
-    except Exception as e:
-        print(f"[FAIL] IP {ip} 测试失败: {e}")
+    except Exception:
         return ip, False
 
 
@@ -90,13 +87,26 @@ async def main():
     connector = aiohttp.TCPConnector(limit=CONCURRENCY)
     async with aiohttp.ClientSession(connector=connector) as session:
         tasks = [test_ip(ip, session) for ip in all_ips]
-        results = await asyncio.gather(*tasks)
 
+        # 使用 tqdm 显示进度条
+        results = []
+        for f in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="测试进度"):
+            ip, ok = await f
+            results.append((ip, ok))
+
+    # 分类结果
     for ip, ok in results:
         if ok:
             unblocked.append(ip)
         else:
             blocked.append(ip)
+
+    # 每分钟显示 5 个成功 IP
+    print("[INFO] 开始输出可访问 IP（每分钟 5 个）...")
+    for i in range(0, len(unblocked), 5):
+        batch = unblocked[i:i+5]
+        print("[PASS]", ", ".join(batch))
+        await asyncio.sleep(60)  # 每分钟输出一次
 
     # 输出统计
     print(f"[SUMMARY] 测试完成，用时 {time.time() - start_time:.2f} 秒")
