@@ -1,0 +1,11 @@
+name: SSH
+
+on:
+  #schedule:
+    #- cron: "0 0 * * *"   # 每天运行一次
+  workflow_dispatch:       # 手动触发
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360   # 最长 6 小时
