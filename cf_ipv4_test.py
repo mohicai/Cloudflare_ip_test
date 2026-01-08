@@ -12,7 +12,7 @@ PROXY_URL = "http://f2O9Sw2sqd:zbZEBEqbho@120.230.229.77:35933"
 
 TIMEOUT = 3
 CONCURRENCY = 50  # 降低并发数以适应更少的IP测试
-MAX_IPS = 100  # 新增：最大测试IP数
+MAX_IPS = 10000  # 新增：最大测试IP数
 
 
 async def fetch_ips(url):
