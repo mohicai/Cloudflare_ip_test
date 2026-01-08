@@ -9,7 +9,7 @@ PROXY_URL = "http://f2O9Sw2sqd:zbZEBEqbho@120.230.229.77:35931"
 
 TIMEOUT = 3
 CONCURRENCY = 50
-MAX_IPS = 1000
+MAX_IPS = 100000
 
 
 async def fetch_ips(url):
