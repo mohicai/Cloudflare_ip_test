@@ -8,7 +8,7 @@ from tqdm import tqdm
 CF_IPS_V4 = "https://www.cloudflare.com/ips-v4"
 
 # Mihomo HTTP代理配置（带账号密码）
-PROXY_URL = "http://f2O9Sw2sqd:zbZEBEqbho@120.230.229.77:35933"
+PROXY_URL = "http://f2O9Sw2sqd:zbZEBEqbho@120.230.229.77:35931"
 
 TIMEOUT = 3
 CONCURRENCY = 50
