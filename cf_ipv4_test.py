@@ -137,9 +137,9 @@ async def main():
         print(f"[SUMMARY] 成功率: {len(unblocked)/len(all_ips)*100:.2f}%")
 
     # 写入文件（文件名加前缀表示只测试了100个）
-    with open(f"blocked_{MAX_IPS}.txt", "w") as f:
+    with open(f"blocked.txt", "w") as f:
         f.write("\n".join(blocked))
-    with open(f"unblocked_{MAX_IPS}.txt", "w") as f:
+    with open(f"unblocked.txt", "w") as f:
         f.write("\n".join(unblocked))
 
     print(f"[INFO] 已保存结果到 blocked_{MAX_IPS}.txt 和 unblocked_{MAX_IPS}.txt")
