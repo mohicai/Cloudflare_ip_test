@@ -93,4 +93,4 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add merged/blocked.txt merged/unblocked.txt merged/curl_errors.log
           git commit -m "Update Cloudflare IP test results" || echo "No changes"
-          git push origin master
+          git push origin HEAD:master
