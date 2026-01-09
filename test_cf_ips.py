@@ -13,7 +13,7 @@ async def test_proxy():
     try:
         cmd = [
             "curl","-s","-o","/dev/null","-w","%{http_code}",
-            "https://www.baidu.com","--max-time",str(TIMEOUT),
+            "https://www.baidu.com","--max-time","15",
             "-x", PROXY_URL
         ]
         proc = await asyncio.create_subprocess_exec(
