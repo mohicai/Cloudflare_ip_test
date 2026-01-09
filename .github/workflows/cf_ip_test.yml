@@ -58,7 +58,7 @@ jobs:
       - uses: actions/setup-python@v4
         with:
           python-version: "3.11"
-      - run: pip install tqdm aiohttp
+      - run: pip install tqdm aiohttp requests
 
       - name: Run IP test
         run: |
