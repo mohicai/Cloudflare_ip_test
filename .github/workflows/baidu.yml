@@ -1,77 +1,138 @@
-name: Baidu Cloudflare IP Test
+name: Cloudflare IP Test
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
+    inputs:
+      limit:
+        description: "测试数量 (输入数字 或 all)"
+        required: true
+        default: "1000"
+      interval:
+        description: "进度条刷新间隔 (秒)"
+        required: true
+        default: "5"
 
 jobs:
-  test:
+  generate-matrix:
     runs-on: ubuntu-latest
-
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Fetch Cloudflare IPs
+        id: fetch
+        run: |
+          curl -s https://www.cloudflare.com/ips-v4 > ips.txt
+          count=$(wc -l < ips.txt)
+          echo "total=$count" >> $GITHUB_ENV
+
+      - name: Generate matrix JSON
+        id: set-matrix
+        run: |
+          total=${{ env.total }}
+          step=2
+          arr="["
+          for ((i=0; i<total; i+=step)); do
+            arr="$arr\"$i\","
+          done
+          arr="${arr%,}]"
+          echo "matrix=$arr" >> $GITHUB_OUTPUT
+
+  test:
+    needs: generate-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        batch: ${{ fromJSON(needs.generate-matrix.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Download Mihomo
+          python-version: "3.11"
+      - run: pip install aiohttp tqdm
+      - name: Run IP test
         run: |
-          curl -L https://github.com/MetaCubeX/mihomo/releases/latest/download/mihomo-linux-amd64 -o mihomo
-          chmod +x mihomo
-
-      - name: Create Mihomo config
-        run: |
-          cat > config.yaml <<'EOF'
-          port: 7890
-          socks-port: 7891
-          allow-lan: true
-          mode: Rule
-          log-level: info
-
-          proxies:
-            - name: "北京电信"
-              type: http
-              server: 220.181.33.174
-              port: 443
-              headers:
-                X-T5-Auth: "683556433"
-                Host: "153.3.236.22:443"
-
-          proxy-groups:
-            - name: "自动选择"
-              type: select
-              proxies:
-                - "北京电信"
-
-          rules:
-            - MATCH,自动选择
-          EOF
-
-      - name: Start Mihomo
-        run: |
-          nohup ./mihomo -f config.yaml > mihomo.log 2>&1 &
-          sleep 5
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+          start=$(date +%s)
+          python test_cf_ips.py \
+            --start ${{ matrix.batch }} \
+            --count 2 \
+            --interval ${{ github.event.inputs.interval }} \
+            --limit ${{ github.event.inputs.limit }}
+          end=$(date +%s)
+          echo "${{ matrix.batch }} $((end-start))" > job_time.txt
+      - name: Upload partial results
+        uses: actions/upload-artifact@v3
         with:
-          python-version: '3.10'
+          name: results-${{ matrix.batch }}
+          path: |
+            blocked.txt
+            unblocked.txt
+            curl_errors.log
+            job_time.txt
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests tqdm
+  merge-results:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: artifacts
 
-      - name: Run Cloudflare IP Test
+      - name: Merge results
         run: |
-          python cf1.py --limit 500 --concurrency 50
+          mkdir merged
+          cat artifacts/**/blocked.txt > merged/blocked.txt || true
+          cat artifacts/**/unblocked.txt > merged/unblocked.txt || true
+          cat artifacts/**/curl_errors.log > merged/curl_errors.log || true
+          cat artifacts/**/job_time.txt > merged/job_times.txt || true
 
-      - name: Push results to repository
+      - name: Calculate summary with random samples and timing
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add blocked.txt unblocked.txt
-          git commit -m "Update Cloudflare IP test results [skip ci]" || echo "No changes to commit"
-          git push
+          success=$(wc -l < merged/unblocked.txt || echo 0)
+          fail=$(wc -l < merged/blocked.txt || echo 0)
+          total=$((success+fail))
+          if [ "$total" -gt 0 ]; then
+            rate=$(echo "scale=2; $success*100/$total" | bc)
+          else
+            rate=0
+          fi
+
+          total_time=$(awk '{sum+=$2} END {print sum}' merged/job_times.txt)
+          job_count=$(wc -l < merged/job_times.txt)
+          if [ "$job_count" -gt 0 ]; then
+            avg_time=$(echo "scale=2; $total_time/$job_count" | bc)
+          else
+            avg_time=0
+          fi
+
+          echo "### Cloudflare IP Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- 成功: $success" >> $GITHUB_STEP_SUMMARY
+          echo "- 失败: $fail" >> $GITHUB_STEP_SUMMARY
+          echo "- 总数: $total" >> $GITHUB_STEP_SUMMARY
+          echo "- 成功率: $rate%" >> $GITHUB_STEP_SUMMARY
+          echo "- 总耗时: ${total_time}s" >> $GITHUB_STEP_SUMMARY
+          echo "- 平均每个 job 耗时: ${avg_time}s" >> $GITHUB_STEP_SUMMARY
+          echo "- 参数 limit: ${{ github.event.inputs.limit }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 参数 interval: ${{ github.event.inputs.interval }}" >> $GITHUB_STEP_SUMMARY
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### 每个 job 耗时分布" >> $GITHUB_STEP_SUMMARY
+          awk '{printf "- 段索引 %s: %ss\n",$1,$2}' merged/job_times.txt >> $GITHUB_STEP_SUMMARY
+
+          if [ "$success" -gt 0 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "#### 随机成功 IP 示例 (最多 10 个)" >> $GITHUB_STEP_SUMMARY
+            shuf -n 10 merged/unblocked.txt >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "$fail" -gt 0 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "#### 随机失败 IP 示例 (最多 10 个)" >> $GITHUB_STEP_SUMMARY
+            shuf -n 10 merged/blocked.txt >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload merged results
+        uses: actions/upload-artifact@v3
+        with:
+          name: merged-results
+          path: merged
