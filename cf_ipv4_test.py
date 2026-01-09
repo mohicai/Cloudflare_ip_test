@@ -7,7 +7,7 @@ import argparse
 from tqdm import tqdm
 
 CF_IPS_V4 = "https://www.cloudflare.com/ips-v4"
-PROXY_URL = "http://f2O9Sw2sqd:zbZEBEqbho@120.230.229.77:35931"
+PROXY_URL = "http://f2O9Sw2sqd:zbZEBEqbho@120.230.229.77:35831"
 
 TIMEOUT = 3
 CONCURRENCY = 50
