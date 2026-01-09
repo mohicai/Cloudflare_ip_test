@@ -1,10 +1,41 @@
 import argparse
 import asyncio
 import ipaddress
+import os
 import time
 from tqdm import tqdm
 
-PROXY_URL = "http://f2O9Sw2sqd:zbZEBEqbho@120.230.229.77:35831"  # ⚠️替换成你的代理
+import requests
+from urllib.parse import urlparse
+
+def resolve_proxy(domain_url, username, password):
+    """
+    访问域名，跟随重定向，解析最终 IP 和端口，返回代理 URL
+    """
+    try:
+        resp = requests.get(domain_url, allow_redirects=True, timeout=5)
+        final_url = resp.url
+        parsed = urlparse(final_url)
+        ip = parsed.hostname
+        port = parsed.port
+        if not ip or not port:
+            raise ValueError(f"无法解析最终地址: {final_url}")
+        if username and password:
+            proxy_url = f"http://{username}:{password}@{ip}:{port}"
+        else:
+            proxy_url = f"http://{ip}:{port}"
+        return proxy_url
+    except Exception as e:
+        print(f"[ERROR] 解析代理失败: {e}")
+        return None
+
+# 从 GitHub Secrets 注入的环境变量读取
+domain_url = os.environ.get("PROXY_DOMAIN_URL")
+username   = os.environ.get("PROXY_USERNAME")
+password   = os.environ.get("PROXY_PASSWORD")
+
+PROXY_URL = resolve_proxy(domain_url, username, password)
+
 TIMEOUT = 3
 CONCURRENCY = 50
 
@@ -57,18 +88,15 @@ async def test_ip(ip, use_proxy=True):
         return ip, False, f"Exception: {e}"
 
 async def main(cidr_file, refresh_interval, limit, use_proxy):
-    # 先测试代理
     if use_proxy:
         ok = await test_proxy()
         if not ok:
             print("[FATAL] 代理不可用，退出测试")
             return
 
-    # 从文件读取 CIDR 段
     with open(cidr_file) as f:
         cidrs = [line.strip() for line in f if line.strip()]
 
-    # 展开 CIDR 段为 IP 列表
     all_ips = []
     for cidr in cidrs:
         net = ipaddress.ip_network(cidr)
@@ -104,7 +132,6 @@ async def main(cidr_file, refresh_interval, limit, use_proxy):
             errors.append(f"{ip}: {err}")
         done_count += 1
 
-        # 每隔 refresh_interval 秒刷新一次 ETA
         now = time.time()
         if now - last_refresh >= refresh_interval or idx == total_tasks:
             elapsed = now - start_time
@@ -125,7 +152,6 @@ async def main(cidr_file, refresh_interval, limit, use_proxy):
     elapsed = time.time() - start_time
     print(f"[SUMMARY] 成功:{success} 失败:{fail} 成功率:{success/(success+fail)*100:.2f}% 耗时:{elapsed:.1f}s")
 
-    # 输出结果文件
     with open("blocked.txt","w") as f: f.write("\n".join(blocked))
     with open("unblocked.txt","w") as f: f.write("\n".join(unblocked))
     with open("curl_errors.log","w") as f: f.write("\n".join(errors))
