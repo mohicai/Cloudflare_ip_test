@@ -1,0 +1,165 @@
+name: Cloudflare IP Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: "总 job 数量 (输入数字)"
+        required: true
+        default: "50"
+      interval:
+        description: "进度条刷新间隔 (秒)"
+        required: true
+        default: "5"
+
+jobs:
+  generate-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      per_job: ${{ steps.set-matrix.outputs.per_job }}
+    steps:
+      - name: Fetch Cloudflare IPs
+        id: fetch
+        run: |
+          curl -s https://www.cloudflare.com/ips-v4 > ips.txt
+          # 展开所有 IP 到 all_ips.txt
+          > all_ips.txt
+          while read cidr; do
+            python - <<'EOF' >> all_ips.txt
+          import ipaddress, sys
+          net = ipaddress.ip_network(cidr.strip())
+          for ip in net.hosts():
+          print(ip)
+          EOF
+          done < ips.txt
+          count=$(wc -l < all_ips.txt | tr -d '[:space:]')
+          echo "total=$count" >> $GITHUB_ENV
+
+      - name: Generate matrix JSON
+        id: set-matrix
+        run: |
+          total=${{ env.total }}
+          jobs=${{ github.event.inputs.jobs }}
+          per_job=$(( (total + jobs - 1) / jobs ))   # 平均分配，向上取整
+          arr="["
+          for ((i=0; i<total; i+=per_job)); do
+            arr="$arr\"$i\","
+          done
+          arr="${arr%,}]"
+          echo "matrix=$arr" >> $GITHUB_OUTPUT
+          echo "per_job=$per_job" >> $GITHUB_OUTPUT
+
+      - name: Upload all_ips.txt
+        uses: actions/upload-artifact@v4
+        with:
+          name: all-ips
+          path: all_ips.txt
+
+  test:
+    needs: generate-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      matrix:
+        batch: ${{ fromJSON(needs.generate-matrix.outputs.matrix) }}
+      max-parallel: 20   # 限制最大并发 job 数量，避免过载
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+      - run: pip install aiohttp tqdm
+      - name: Download all_ips.txt
+        uses: actions/download-artifact@v4
+        with:
+          name: all-ips
+          path: .
+      - name: Run IP test
+        run: |
+          start=$(date +%s)
+          python test_cf_ips.py \
+            --start ${{ matrix.batch }} \
+            --limit ${{ needs.generate-matrix.outputs.per_job }} \
+            --interval ${{ github.event.inputs.interval }}
+          end=$(date +%s)
+          echo "${{ matrix.batch }} $((end-start)) 120" > job_time.txt
+      - name: Upload partial results
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ matrix.batch }}
+          path: |
+            blocked.txt
+            unblocked.txt
+            curl_errors.log
+            job_time.txt
+
+  merge-results:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Merge results
+        run: |
+          mkdir merged
+          cat artifacts/**/blocked.txt > merged/blocked.txt || true
+          cat artifacts/**/unblocked.txt > merged/unblocked.txt || true
+          cat artifacts/**/curl_errors.log > merged/curl_errors.log || true
+          cat artifacts/**/job_time.txt > merged/job_times.txt || true
+
+      - name: Calculate summary with random samples and timing
+        run: |
+          success=$(wc -l < merged/unblocked.txt || echo 0)
+          fail=$(wc -l < merged/blocked.txt || echo 0)
+          total=$((success+fail))
+          if [ "$total" -gt 0 ]; then
+            rate=$(echo "scale=2; $success*100/$total" | bc)
+          else
+            rate=0
+          fi
+
+          total_time=$(awk '{sum+=$2} END {print sum}' merged/job_times.txt)
+          job_count=$(wc -l < merged/job_times.txt)
+          if [ "$job_count" -gt 0 ]; then
+            avg_time=$(echo "scale=2; $total_time/$job_count" | bc)
+          else
+            avg_time=0
+          fi
+
+          echo "### Cloudflare IP Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- 成功: $success" >> $GITHUB_STEP_SUMMARY
+          echo "- 失败: $fail" >> $GITHUB_STEP_SUMMARY
+          echo "- 总数: $total" >> $GITHUB_STEP_SUMMARY
+          echo "- 成功率: $rate%" >> $GITHUB_STEP_SUMMARY
+          echo "- 总耗时: ${total_time}s" >> $GITHUB_STEP_SUMMARY
+          echo "- 平均每个 job 耗时: ${avg_time}s" >> $GITHUB_STEP_SUMMARY
+          echo "- 总 job 数量: ${{ github.event.inputs.jobs }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 平均每个 job 测试 IP 数: ${{ needs.generate-matrix.outputs.per_job }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 参数 interval: ${{ github.event.inputs.interval }}" >> $GITHUB_STEP_SUMMARY
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### 每个 job 耗时分布 (含限制值)" >> $GITHUB_STEP_SUMMARY
+          awk '{printf "- 起始索引 %s: %ss (限制 %s 分钟)\n",$1,$2,$3}' merged/job_times.txt >> $GITHUB_STEP_SUMMARY
+
+          if [ "$success" -gt 0 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "#### 随机成功 IP 示例 (最多 10 个)" >> $GITHUB_STEP_SUMMARY
+            shuf -n 10 merged/unblocked.txt >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "$fail" -gt 0 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "#### 随机失败 IP 示例 (最多 10 个)" >> $GITHUB_STEP_SUMMARY
+            shuf -n 10 merged/blocked.txt >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload merged results
+        uses: actions/upload-artifact@v4
+        with:
+          name: merged-results
+          path: merged
