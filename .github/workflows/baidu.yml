@@ -3,10 +3,10 @@ name: Cloudflare IP Test
 on:
   workflow_dispatch:
     inputs:
-      limit:
-        description: "测试数量 (输入数字 或 all)"
+      jobs:
+        description: "总 job 数量 (输入数字)"
         required: true
-        default: "1000"
+        default: "50"
       interval:
         description: "进度条刷新间隔 (秒)"
         required: true
@@ -15,33 +15,53 @@ on:
 jobs:
   generate-matrix:
     runs-on: ubuntu-latest
-    timeout-minutes: 30   # 限制 30 分钟
+    timeout-minutes: 30
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
+      per_job: ${{ steps.set-matrix.outputs.per_job }}
     steps:
       - name: Fetch Cloudflare IPs
         id: fetch
         run: |
           curl -s https://www.cloudflare.com/ips-v4 > ips.txt
-          count=$(wc -l < ips.txt)
+          # 展开所有 IP 到 all_ips.txt
+          > all_ips.txt
+          while read cidr; do
+            python - <<'EOF' >> all_ips.txt
+import ipaddress,sys
+cidr=sys.stdin.read().strip()
+net=ipaddress.ip_network(cidr)
+for ip in net.hosts():
+    print(ip)
+EOF <<< "$cidr"
+          done < ips.txt
+          count=$(wc -l < all_ips.txt)
           echo "total=$count" >> $GITHUB_ENV
 
       - name: Generate matrix JSON
         id: set-matrix
         run: |
           total=${{ env.total }}
-          step=2
+          jobs=${{ github.event.inputs.jobs }}
+          per_job=$(( (total + jobs - 1) / jobs ))   # 平均分配，向上取整
           arr="["
-          for ((i=0; i<total; i+=step)); do
+          for ((i=0; i<total; i+=per_job)); do
             arr="$arr\"$i\","
           done
           arr="${arr%,}]"
           echo "matrix=$arr" >> $GITHUB_OUTPUT
+          echo "per_job=$per_job" >> $GITHUB_OUTPUT
+
+      - name: Upload all_ips.txt
+        uses: actions/upload-artifact@v4
+        with:
+          name: all-ips
+          path: all_ips.txt
 
   test:
     needs: generate-matrix
     runs-on: ubuntu-latest
-    timeout-minutes: 120   # 每个 job 限制 120 分钟
+    timeout-minutes: 120
     strategy:
       matrix:
         batch: ${{ fromJSON(needs.generate-matrix.outputs.matrix) }}
@@ -51,14 +71,18 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install aiohttp tqdm
+      - name: Download all_ips.txt
+        uses: actions/download-artifact@v4
+        with:
+          name: all-ips
+          path: .
       - name: Run IP test
         run: |
           start=$(date +%s)
           python test_cf_ips.py \
             --start ${{ matrix.batch }} \
-            --count 2 \
-            --interval ${{ github.event.inputs.interval }} \
-            --limit ${{ github.event.inputs.limit }}
+            --limit ${{ needs.generate-matrix.outputs.per_job }} \
+            --interval ${{ github.event.inputs.interval }}
           end=$(date +%s)
           echo "${{ matrix.batch }} $((end-start)) 120" > job_time.txt
       - name: Upload partial results
@@ -74,7 +98,7 @@ jobs:
   merge-results:
     needs: test
     runs-on: ubuntu-latest
-    timeout-minutes: 30   # 限制 30 分钟
+    timeout-minutes: 30
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -115,12 +139,13 @@ jobs:
           echo "- 成功率: $rate%" >> $GITHUB_STEP_SUMMARY
           echo "- 总耗时: ${total_time}s" >> $GITHUB_STEP_SUMMARY
           echo "- 平均每个 job 耗时: ${avg_time}s" >> $GITHUB_STEP_SUMMARY
-          echo "- 参数 limit: ${{ github.event.inputs.limit }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 总 job 数量: ${{ github.event.inputs.jobs }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 平均每个 job 测试 IP 数: ${{ needs.generate-matrix.outputs.per_job }}" >> $GITHUB_STEP_SUMMARY
           echo "- 参数 interval: ${{ github.event.inputs.interval }}" >> $GITHUB_STEP_SUMMARY
 
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "#### 每个 job 耗时分布 (含限制值)" >> $GITHUB_STEP_SUMMARY
-          awk '{printf "- 段索引 %s: %ss (限制 %s 分钟)\n",$1,$2,$3}' merged/job_times.txt >> $GITHUB_STEP_SUMMARY
+          awk '{printf "- 起始索引 %s: %ss (限制 %s 分钟)\n",$1,$2,$3}' merged/job_times.txt >> $GITHUB_STEP_SUMMARY
 
           if [ "$success" -gt 0 ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
@@ -132,7 +157,6 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "#### 随机失败 IP 示例 (最多 10 个)" >> $GITHUB_STEP_SUMMARY
             shuf -n 10 merged/blocked.txt >> $GITHUB_STEP_SUMMARY
-          fi
 
       - name: Upload merged results
         uses: actions/upload-artifact@v4
