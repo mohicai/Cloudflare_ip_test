@@ -23,11 +23,13 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install requests
+
       - name: Generate job assignments
         id: split
         run: |
           python split_cidrs.py --jobs ${{ github.event.inputs.jobs }} > assignments.json
           echo "matrix=$(cat assignments.json)" >> $GITHUB_OUTPUT
+
       - name: Print job summary
         run: |
           echo "### CIDR 分配详情" >> $GITHUB_STEP_SUMMARY
@@ -36,35 +38,52 @@ jobs:
   test:
     needs: generate-matrix
     runs-on: ubuntu-latest
-    timeout-minutes: 360   # 最长运行时间 6 小时
+    timeout-minutes: 360
     strategy:
       matrix:
         job: ${{ fromJSON(needs.generate-matrix.outputs.matrix) }}
-      max-parallel: 20     # 默认最多并行 20 个 job（免费版限制）
+      max-parallel: 20
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
         with:
           python-version: "3.11"
       - run: pip install tqdm aiohttp
+
       - name: Run IP test
         run: |
           for cidr in ${{ join(matrix.job, ' ') }}; do
             echo "$cidr" >> cidrs_part.txt
           done
-          python test_cf_ips.py --cidr-file cidrs_part.txt --limit 1000 --interval ${{ github.event.inputs.interval }}
-      - name: Save partial results
-        run: |
-          mkdir -p merged
-          cat blocked.txt >> merged/blocked.txt || true
-          cat unblocked.txt >> merged/unblocked.txt || true
-          cat curl_errors.log >> merged/curl_errors.log || true
+          python test_cf_ips.py --cidr-file cidrs_part.txt --limit 500 --interval ${{ github.event.inputs.interval }}
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ matrix.job }}
+          path: |
+            blocked.txt
+            unblocked.txt
+            curl_errors.log
 
   merge-results:
     needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Merge results
+        run: |
+          mkdir merged
+          cat artifacts/**/blocked.txt > merged/blocked.txt || true
+          cat artifacts/**/unblocked.txt > merged/unblocked.txt || true
+          cat artifacts/**/curl_errors.log > merged/curl_errors.log || true
+
       - name: Summary
         run: |
           success=$(wc -l < merged/unblocked.txt || echo 0)
@@ -75,25 +94,24 @@ jobs:
           else
             rate=0
           fi
+
           echo "### Cloudflare IP Test Summary" >> $GITHUB_STEP_SUMMARY
           echo "- 成功: $success" >> $GITHUB_STEP_SUMMARY
           echo "- 失败: $fail" >> $GITHUB_STEP_SUMMARY
           echo "- 总数: $total" >> $GITHUB_STEP_SUMMARY
           echo "- 成功率: $rate%" >> $GITHUB_STEP_SUMMARY
+
           echo "" >> $GITHUB_STEP_SUMMARY
-          if [ "$success" -gt 0 ]; then
-            echo "#### 随机成功 IP 示例" >> $GITHUB_STEP_SUMMARY
-            shuf -n 10 merged/unblocked.txt >> $GITHUB_STEP_SUMMARY
-          fi
-          if [ "$fail" -gt 0 ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "#### 随机失败 IP 示例" >> $GITHUB_STEP_SUMMARY
-            shuf -n 10 merged/blocked.txt >> $GITHUB_STEP_SUMMARY
-          fi
-          if [ -s merged/curl_errors.log ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "#### 随机错误日志样本" >> $GITHUB_STEP_SUMMARY
-            shuf -n 5 merged/curl_errors.log >> $GITHUB_STEP_SUMMARY
+          echo "#### 随机成功 IP 示例" >> $GITHUB_STEP_SUMMARY
+          shuf -n 10 merged/unblocked.txt >> $GITHUB_STEP_SUMMARY || true
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### 随机失败 IP 示例" >> $GITHUB_STEP_SUMMARY
+          shuf -n 10 merged/blocked.txt >> $GITHUB_STEP_SUMMARY || true
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### 随机错误日志样本" >> $GITHUB_STEP_SUMMARY
+          shuf -n 5 merged/curl_errors.log >> $GITHUB_STEP_SUMMARY || true
 
       - name: Commit results to master
         run: |
@@ -101,4 +119,4 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add merged/blocked.txt merged/unblocked.txt merged/curl_errors.log
           git commit -m "Update Cloudflare IP test results"
-          git push origin master --force
+          git push origin master
