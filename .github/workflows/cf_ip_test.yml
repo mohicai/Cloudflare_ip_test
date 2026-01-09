@@ -16,7 +16,7 @@ on:
         required: true
         default: "all"
       proxy:
-        description: "默认使用代理，不使用填：--no-proxy"
+        description: "默认使用代理，不使用填：\n --no-proxy"
         required: false
         default: ""
 permissions:
