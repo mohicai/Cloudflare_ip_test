@@ -36,10 +36,11 @@ jobs:
   test:
     needs: generate-matrix
     runs-on: ubuntu-latest
+    timeout-minutes: 360   # 最长运行时间 6 小时
     strategy:
       matrix:
         job: ${{ fromJSON(needs.generate-matrix.outputs.matrix) }}
-      max-parallel: 10
+      max-parallel: 20     # 默认最多并行 20 个 job（免费版限制）
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
@@ -51,7 +52,7 @@ jobs:
           for cidr in ${{ join(matrix.job, ' ') }}; do
             echo "$cidr" >> cidrs_part.txt
           done
-          python test_cf_ips.py --cidr-file cidrs_part.txt --limit all --interval ${{ github.event.inputs.interval }}
+          python test_cf_ips.py --cidr-file cidrs_part.txt --limit 1000 --interval ${{ github.event.inputs.interval }}
       - name: Save partial results
         run: |
           mkdir -p merged
@@ -64,7 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Merge results summary
+      - name: Summary
         run: |
           success=$(wc -l < merged/unblocked.txt || echo 0)
           fail=$(wc -l < merged/blocked.txt || echo 0)
