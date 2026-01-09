@@ -18,12 +18,19 @@ async def fetch_ips(url):
             text = await resp.text()
             return text.strip().splitlines()
 
-async def test_ip(ip):
+async def test_ip(ip, use_proxy=True):
     try:
-        proc = await asyncio.create_subprocess_exec(
+        cmd = [
             "curl","-s","-o","/dev/null","-w","%{http_code}",
-            f"http://{ip}","--max-time",str(TIMEOUT),
-            stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE
+            f"http://{ip}","--max-time",str(TIMEOUT)
+        ]
+        if use_proxy:
+            cmd.extend(["-x", PROXY_URL])  # ✅ 选择性走代理
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
         )
         stdout, stderr = await proc.communicate()
         code = stdout.decode().strip()
@@ -35,7 +42,7 @@ async def test_ip(ip):
     except Exception as e:
         return ip, False, f"Exception: {e}"
 
-async def main(start_idx, count, refresh_interval, limit):
+async def main(start_idx, count, refresh_interval, limit, use_proxy):
     v4_cidrs = await fetch_ips(CF_IPS_V4)
     selected_cidrs = v4_cidrs[start_idx:start_idx+count]
 
@@ -49,12 +56,12 @@ async def main(start_idx, count, refresh_interval, limit):
         max_ips = int(limit)
         all_ips = all_ips[:max_ips]
 
-    print(f"[INFO] 本次测试 {len(all_ips)} 个 IP (段索引 {start_idx}~{start_idx+count-1}, limit={limit})")
+    print(f"[INFO] 本次测试 {len(all_ips)} 个 IP (段索引 {start_idx}~{start_idx+count-1}, limit={limit}, proxy={'ON' if use_proxy else 'OFF'})")
 
     sem = asyncio.Semaphore(CONCURRENCY)
     async def sem_test(ip):
         async with sem:
-            return await test_ip(ip)
+            return await test_ip(ip, use_proxy)
 
     tasks = [sem_test(ip) for ip in all_ips]
 
@@ -94,5 +101,6 @@ if __name__ == "__main__":
     parser.add_argument("--count", type=int, default=2)
     parser.add_argument("--interval", type=int, default=5)
     parser.add_argument("--limit", default="1000", help="测试数量 (数字 或 all)")
+    parser.add_argument("--no-proxy", action="store_true", help="禁用代理测试")
     args = parser.parse_args()
-    asyncio.run(main(args.start, args.count, args.interval, args.limit))
+    asyncio.run(main(args.start, args.count, args.interval, args.limit, not args.no_proxy))
