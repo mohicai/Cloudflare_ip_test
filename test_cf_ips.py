@@ -56,7 +56,8 @@ async def main(start_idx, count, refresh_interval, limit, use_proxy):
         max_ips = int(limit)
         all_ips = all_ips[:max_ips]
 
-    print(f"[INFO] 本次测试 {len(all_ips)} 个 IP (段索引 {start_idx}~{start_idx+count-1}, limit={limit}, proxy={'ON' if use_proxy else 'OFF'})")
+    total_tasks = len(all_ips)
+    print(f"[INFO] 本次测试 {total_tasks} 个 IP (段索引 {start_idx}~{start_idx+count-1}, limit={limit}, proxy={'ON' if use_proxy else 'OFF'})")
 
     sem = asyncio.Semaphore(CONCURRENCY)
     async def sem_test(ip):
@@ -68,7 +69,8 @@ async def main(start_idx, count, refresh_interval, limit, use_proxy):
     success, fail = 0, 0
     unblocked_list, blocked_list = [], []
     last_refresh = time.time()
-    pbar = tqdm(total=len(tasks), desc="测试进度", dynamic_ncols=True)
+    start_time = time.time()
+    pbar = tqdm(total=total_tasks, desc="测试进度", dynamic_ncols=True)
 
     for idx, f in enumerate(asyncio.as_completed(tasks), 1):
         ip, ok, err = await f
@@ -81,12 +83,18 @@ async def main(start_idx, count, refresh_interval, limit, use_proxy):
 
         now = time.time()
         if now - last_refresh >= refresh_interval:
+            elapsed = now - start_time
+            avg_time = elapsed / idx
+            remaining = total_tasks - idx
+            eta_seconds = int(avg_time * remaining)
+            eta_str = time.strftime("%H:%M:%S", time.gmtime(eta_seconds))
+
             rate = success/(success+fail)*100 if (success+fail)>0 else 0
             pbar.update(idx - pbar.n)
-            pbar.set_description(f"成功:{success} 失败:{fail} 成功率:{rate:.2f}%")
+            pbar.set_description(f"成功:{success} 失败:{fail} 成功率:{rate:.2f}% ETA:{eta_str}")
             last_refresh = now
 
-    pbar.update(len(tasks)-pbar.n)
+    pbar.update(total_tasks - pbar.n)
     pbar.close()
 
     print(f"\n[SUMMARY] 成功:{success} 失败:{fail} 成功率:{success/(success+fail)*100:.2f}%")
