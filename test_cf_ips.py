@@ -2,7 +2,6 @@ import argparse
 import asyncio
 import ipaddress
 import time
-import random
 from tqdm import tqdm
 
 PROXY_URL = "http://f2O9Sw2sqd:zbZEBEqbho@120.230.229.77:35831"  # ⚠️替换成你的代理
@@ -33,7 +32,7 @@ async def test_ip(ip, use_proxy=True):
         return ip, False, f"Exception: {e}"
 
 async def main(cidr_file, refresh_interval, limit, use_proxy):
-    # 从 workflow 提供的文件读取 CIDR 段
+    # 从文件读取 CIDR 段
     with open(cidr_file) as f:
         cidrs = [line.strip() for line in f if line.strip()]
 
@@ -58,6 +57,7 @@ async def main(cidr_file, refresh_interval, limit, use_proxy):
     success, fail = 0, 0
     unblocked, blocked, errors = [], [], []
     start_time = time.time()
+    last_refresh = start_time
     pbar = tqdm(total=total_tasks, desc="测试进度", dynamic_ncols=True)
 
     for idx, f in enumerate(asyncio.as_completed(tasks), 1):
@@ -71,11 +71,25 @@ async def main(cidr_file, refresh_interval, limit, use_proxy):
             errors.append(f"{ip}: {err}")
         pbar.update(1)
 
+        # 每隔 refresh_interval 秒刷新一次 ETA
+        now = time.time()
+        if now - last_refresh >= refresh_interval:
+            elapsed = now - start_time
+            ips_per_sec = idx / elapsed if elapsed > 0 else 0
+            remaining = total_tasks - idx
+            eta = remaining / ips_per_sec if ips_per_sec > 0 else 0
+            pbar.set_postfix({
+                "成功": success,
+                "失败": fail,
+                "ETA": f"{eta:.0f}s"
+            })
+            last_refresh = now
+
     pbar.close()
     elapsed = time.time() - start_time
     print(f"[SUMMARY] 成功:{success} 失败:{fail} 成功率:{success/(success+fail)*100:.2f}% 耗时:{elapsed:.1f}s")
 
-    # 输出结果文件，供 workflow 汇总
+    # 输出结果文件
     with open("blocked.txt","w") as f: f.write("\n".join(blocked))
     with open("unblocked.txt","w") as f: f.write("\n".join(unblocked))
     with open("curl_errors.log","w") as f: f.write("\n".join(errors))
