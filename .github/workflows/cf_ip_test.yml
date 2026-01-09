@@ -21,7 +21,10 @@ on:
         default: ""
 permissions:
   contents: write
-        
+env:
+  PROXY_DOMAIN_URL: ${{ secrets.PROXY_DOMAIN_URL }}
+  PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+  PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}     
 jobs:
   generate-matrix:
     runs-on: ubuntu-latest
@@ -102,7 +105,4 @@ jobs:
           git commit -m "Update Cloudflare IP test results" || echo "No changes"
           git push origin HEAD:master --force
         env:
-          PROXY_DOMAIN_URL: ${{ secrets.PROXY_DOMAIN_URL }}
-          PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
-          PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
