@@ -6,7 +6,7 @@ on:
       jobs:
         description: "总 job 数量 (输入数字，最大 256)"
         required: true
-        default: "50"
+        default: "25"
       interval:
         description: "进度条刷新间隔 (秒)"
         required: true
@@ -15,84 +15,52 @@ on:
 jobs:
   generate-matrix:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-      per_job: ${{ steps.set-matrix.outputs.per_job }}
+      matrix: ${{ steps.split.outputs.matrix }}
     steps:
-      - name: Fetch Cloudflare CIDRs
-        id: fetch
-        run: |
-          curl -s https://www.cloudflare.com/ips-v4 > cidrs.txt
-          total=$(wc -l < cidrs.txt | tr -d '[:space:]')
-          echo "total=$total" >> $GITHUB_ENV
+      - uses: actions/checkout@v3
 
-      - name: Generate matrix JSON
-        id: set-matrix
+      - name: Generate job assignments
+        id: split
         run: |
-          total=${{ env.total }}
-          jobs=${{ github.event.inputs.jobs }}
-          if [ "$jobs" -gt 256 ]; then
-            jobs=256
-          fi
-          per_job=$(( (total + jobs - 1) / jobs ))
-          arr="["
-          for ((i=0; i<total; i+=per_job)); do
-            arr="$arr\"$i\","
-          done
-          arr="${arr%,}]"
-          echo "matrix=$arr" >> $GITHUB_OUTPUT
-          echo "per_job=$per_job" >> $GITHUB_OUTPUT
+          python split_cidrs.py --jobs ${{ github.event.inputs.jobs }} > assignments.json
+          echo "matrix=$(cat assignments.json)" >> $GITHUB_OUTPUT
 
-      - name: Upload cidrs.txt
+      - name: Upload assignments
         uses: actions/upload-artifact@v4
         with:
-          name: all-cidrs
-          path: cidrs.txt
+          name: cidr-assignments
+          path: assignments.json
 
   test:
     needs: generate-matrix
     runs-on: ubuntu-latest
-    timeout-minutes: 120
     strategy:
       matrix:
-        batch: ${{ fromJSON(needs.generate-matrix.outputs.matrix) }}
-      max-parallel: 20
+        job: ${{ fromJSON(needs.generate-matrix.outputs.matrix) }}
+      max-parallel: 10
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
         with:
           python-version: "3.11"
-      - run: pip install aiohttp tqdm
-      - name: Download cidrs.txt
-        uses: actions/download-artifact@v4
-        with:
-          name: all-cidrs
-          path: .
+      - run: pip install tqdm aiohttp
       - name: Run IP test
         run: |
-          start=$(date +%s)
-          sed -n "$(( ${{ matrix.batch }} + 1 )),$(( ${{ matrix.batch }} + ${{ needs.generate-matrix.outputs.per_job }} ))p" cidrs.txt > cidrs_part.txt
-          python test_cf_ips.py \
-            --cidr-file cidrs_part.txt \
-            --limit all \
-            --interval ${{ github.event.inputs.interval }}
-          end=$(date +%s)
-          echo "${{ matrix.batch }} $((end-start)) 120" > job_time.txt
-      - name: Upload partial results
+          echo "${{ matrix.job }}" > cidrs_part.txt
+          python test_cf_ips.py --cidr-file cidrs_part.txt --interval ${{ github.event.inputs.interval }}
+      - name: Upload results
         uses: actions/upload-artifact@v4
         with:
-          name: results-${{ matrix.batch }}
+          name: results-${{ matrix.job }}
           path: |
             blocked.txt
             unblocked.txt
             curl_errors.log
-            job_time.txt
 
   merge-results:
     needs: test
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -105,60 +73,24 @@ jobs:
           cat artifacts/**/blocked.txt > merged/blocked.txt || true
           cat artifacts/**/unblocked.txt > merged/unblocked.txt || true
           cat artifacts/**/curl_errors.log > merged/curl_errors.log || true
-          cat artifacts/**/job_time.txt > merged/job_times.txt || true
 
-      - name: Calculate summary with random samples and timing
+      - name: Summary
         run: |
           success=$(wc -l < merged/unblocked.txt || echo 0)
           fail=$(wc -l < merged/blocked.txt || echo 0)
           total=$((success+fail))
-          if [ "$total" -gt 0 ]; then
-            rate=$(echo "scale=2; $success*100/$total" | bc)
-          else
-            rate=0
-          fi
-
-          total_time=$(awk '{sum+=$2} END {print sum}' merged/job_times.txt)
-          job_count=$(wc -l < merged/job_times.txt)
-          if [ "$job_count" -gt 0 ]; then
-            avg_time=$(echo "scale=2; $total_time/$job_count" | bc)
-          else
-            avg_time=0
-          fi
-
+          rate=$(echo "scale=2; $success*100/$total" | bc)
           echo "### Cloudflare IP Test Summary" >> $GITHUB_STEP_SUMMARY
           echo "- 成功: $success" >> $GITHUB_STEP_SUMMARY
           echo "- 失败: $fail" >> $GITHUB_STEP_SUMMARY
           echo "- 总数: $total" >> $GITHUB_STEP_SUMMARY
           echo "- 成功率: $rate%" >> $GITHUB_STEP_SUMMARY
-          echo "- 总耗时: ${total_time}s" >> $GITHUB_STEP_SUMMARY
-          echo "- 平均每个 job 耗时: ${avg_time}s" >> $GITHUB_STEP_SUMMARY
-          echo "- 总 job 数量: ${{ github.event.inputs.jobs }}" >> $GITHUB_STEP_SUMMARY
-          echo "- 平均每个 job 测试 CIDR 数: ${{ needs.generate-matrix.outputs.per_job }}" >> $GITHUB_STEP_SUMMARY
-          echo "- 参数 interval: ${{ github.event.inputs.interval }}" >> $GITHUB_STEP_SUMMARY
-
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "#### 每个 job 耗时分布 (含限制值)" >> $GITHUB_STEP_SUMMARY
-          awk '{printf "- 起始索引 %s: %ss (限制 %s 分钟)\n",$1,$2,$3}' merged/job_times.txt >> $GITHUB_STEP_SUMMARY
-
-          if [ "$success" -gt 0 ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "#### 随机成功 IP 示例 (最多 10 个)" >> $GITHUB_STEP_SUMMARY
-            shuf -n 10 merged/unblocked.txt >> $GITHUB_STEP_SUMMARY
-          fi
-
-          if [ "$fail" -gt 0 ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "#### 随机失败 IP 示例 (最多 10 个)" >> $GITHUB_STEP_SUMMARY
-            shuf -n 10 merged/blocked.txt >> $GITHUB_STEP_SUMMARY
-
-          if [ -s merged/curl_errors.log ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "#### 随机错误日志样本 (最多 5 条)" >> $GITHUB_STEP_SUMMARY
-            shuf -n 5 merged/curl_errors.log >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload merged results
-        uses: actions/upload-artifact@v4
-        with:
-          name: merged-results
-          path: merged
+          echo "#### 随机成功 IP 示例" >> $GITHUB_STEP_SUMMARY
+          shuf -n 10 merged/unblocked.txt >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### 随机失败 IP 示例" >> $GITHUB_STEP_SUMMARY
+          shuf -n 10 merged/blocked.txt >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### 随机错误日志样本" >> $GITHUB_STEP_SUMMARY
+          shuf -n 5 merged/curl_errors.log >> $GITHUB_STEP_SUMMARY
