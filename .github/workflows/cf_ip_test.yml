@@ -19,13 +19,15 @@ jobs:
       matrix: ${{ steps.split.outputs.matrix }}
     steps:
       - uses: actions/checkout@v3
-
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+      - run: pip install requests
       - name: Generate job assignments
         id: split
         run: |
           python split_cidrs.py --jobs ${{ github.event.inputs.jobs }} > assignments.json
           echo "matrix=$(cat assignments.json)" >> $GITHUB_OUTPUT
-
       - name: Upload assignments
         uses: actions/upload-artifact@v4
         with:
@@ -47,7 +49,9 @@ jobs:
       - run: pip install tqdm aiohttp
       - name: Run IP test
         run: |
-          echo "${{ matrix.job }}" > cidrs_part.txt
+          for cidr in ${{ join(matrix.job, ' ') }}; do
+            echo "$cidr" >> cidrs_part.txt
+          done
           python test_cf_ips.py --cidr-file cidrs_part.txt --interval ${{ github.event.inputs.interval }}
       - name: Upload results
         uses: actions/upload-artifact@v4
@@ -79,18 +83,27 @@ jobs:
           success=$(wc -l < merged/unblocked.txt || echo 0)
           fail=$(wc -l < merged/blocked.txt || echo 0)
           total=$((success+fail))
-          rate=$(echo "scale=2; $success*100/$total" | bc)
+          if [ "$total" -gt 0 ]; then
+            rate=$(echo "scale=2; $success*100/$total" | bc)
+          else
+            rate=0
+          fi
           echo "### Cloudflare IP Test Summary" >> $GITHUB_STEP_SUMMARY
           echo "- 成功: $success" >> $GITHUB_STEP_SUMMARY
           echo "- 失败: $fail" >> $GITHUB_STEP_SUMMARY
           echo "- 总数: $total" >> $GITHUB_STEP_SUMMARY
           echo "- 成功率: $rate%" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "#### 随机成功 IP 示例" >> $GITHUB_STEP_SUMMARY
-          shuf -n 10 merged/unblocked.txt >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "#### 随机失败 IP 示例" >> $GITHUB_STEP_SUMMARY
-          shuf -n 10 merged/blocked.txt >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "#### 随机错误日志样本" >> $GITHUB_STEP_SUMMARY
-          shuf -n 5 merged/curl_errors.log >> $GITHUB_STEP_SUMMARY
+          if [ "$success" -gt 0 ]; then
+            echo "#### 随机成功 IP 示例" >> $GITHUB_STEP_SUMMARY
+            shuf -n 10 merged/unblocked.txt >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ "$fail" -gt 0 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "#### 随机失败 IP 示例" >> $GITHUB_STEP_SUMMARY
+            shuf -n 10 merged/blocked.txt >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -s merged/curl_errors.log ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "#### 随机错误日志样本" >> $GITHUB_STEP_SUMMARY
+            shuf -n 5 merged/curl_errors.log >> $GITHUB_STEP_SUMMARY
