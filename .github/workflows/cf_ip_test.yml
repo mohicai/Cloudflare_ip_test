@@ -6,11 +6,11 @@ on:
       jobs:
         description: "总 job 数量 (输入数字，最大 256)"
         required: true
-        default: "20"
+        default: "19"
       interval:
         description: "进度条刷新间隔 (秒)"
         required: true
-        default: "5"
+        default: "25"
       limit:
         description: "测试ip数量 (个)"
         required: true
