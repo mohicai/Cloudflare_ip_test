@@ -15,6 +15,9 @@ on:
         description: "测试ip数量 (个)"
         required: true
         default: "all"
+permissions:
+  contents: write
+        
 jobs:
   generate-matrix:
     runs-on: ubuntu-latest
@@ -93,4 +96,6 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add merged/blocked.txt merged/unblocked.txt merged/curl_errors.log
           git commit -m "Update Cloudflare IP test results" || echo "No changes"
-          git push origin HEAD:master --force
+          git push origin HEAD:master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
