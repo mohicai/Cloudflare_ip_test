@@ -4,7 +4,7 @@ import ipaddress
 import time
 from tqdm import tqdm
 
-PROXY_URL = "http://user:pass@host:port"  # ⚠️替换成你的代理
+PROXY_URL = "http://f2O9Sw2sqd:zbZEBEqbho@120.230.229.77:35831"  # ⚠️替换成你的代理
 TIMEOUT = 3
 CONCURRENCY = 50
 
