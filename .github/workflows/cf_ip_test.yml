@@ -75,6 +75,7 @@ jobs:
           sed -n "$(( ${{ matrix.batch }} + 1 )),$(( ${{ matrix.batch }} + ${{ needs.generate-matrix.outputs.per_job }} ))p" cidrs.txt > cidrs_part.txt
           python test_cf_ips.py \
             --cidr-file cidrs_part.txt \
+            --limit all \
             --interval ${{ github.event.inputs.interval }}
           end=$(date +%s)
           echo "${{ matrix.batch }} $((end-start)) 120" > job_time.txt
