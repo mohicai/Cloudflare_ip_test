@@ -60,6 +60,7 @@ async def main(cidr_file, refresh_interval, limit, use_proxy):
     last_refresh = start_time
     pbar = tqdm(total=total_tasks, desc="测试进度", dynamic_ncols=True)
 
+    done_count = 0
     for idx, f in enumerate(asyncio.as_completed(tasks), 1):
         ip, ok, err = await f
         if ok:
@@ -69,15 +70,19 @@ async def main(cidr_file, refresh_interval, limit, use_proxy):
             fail += 1
             blocked.append(ip)
             errors.append(f"{ip}: {err}")
-        pbar.update(1)
+        done_count += 1
 
-        # 每隔 refresh_interval 秒刷新一次 ETA
+        # 每隔 refresh_interval 秒刷新一次进度条和 ETA
         now = time.time()
-        if now - last_refresh >= refresh_interval:
+        if now - last_refresh >= refresh_interval or idx == total_tasks:
             elapsed = now - start_time
-            ips_per_sec = idx / elapsed if elapsed > 0 else 0
+            ips_per_sec = done_count / elapsed if elapsed > 0 else 0
             remaining = total_tasks - idx
             eta = remaining / ips_per_sec if ips_per_sec > 0 else 0
+
+            # 更新进度条位置和附加信息
+            pbar.n = idx
+            pbar.refresh()
             pbar.set_postfix({
                 "成功": success,
                 "失败": fail,
