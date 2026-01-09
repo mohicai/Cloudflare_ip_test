@@ -18,23 +18,23 @@ jobs:
     timeout-minutes: 30
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
-      perjob: ${{ steps.set-matrix.outputs.perjob }}
+      per_job: ${{ steps.set-matrix.outputs.per_job }}
     steps:
       - name: Fetch Cloudflare IPs
         id: fetch
         run: |
           curl -s https://www.cloudflare.com/ips-v4 > ips.txt
+          # 展开所有 IP 到 all_ips.txt
           > all_ips.txt
           while read cidr; do
-            python3 - <<'EOF' >> all_ips.txt
-import ipaddress,sys
-cidr=sys.stdin.read().strip()
-net=ipaddress.ip_network(cidr)
+            python - <<'EOF' >> all_ips.txt
+import ipaddress, sys
+net = ipaddress.ip_network(cidr.strip())
 for ip in net.hosts():
     print(ip)
-EOF <<< "$cidr"
+EOF
           done < ips.txt
-          count=$(wc -l < all_ips.txt)
+          count=$(wc -l < all_ips.txt | tr -d '[:space:]')
           echo "total=$count" >> $GITHUB_ENV
 
       - name: Generate matrix JSON
@@ -42,18 +42,14 @@ EOF <<< "$cidr"
         run: |
           total=${{ env.total }}
           jobs=${{ github.event.inputs.jobs }}
-          # 转换为整数
-          jobs=$(($jobs))
-          perjob=$(( (total + jobs - 1) / jobs ))
-          echo "perjob=$perjob" >> $GITHUB_OUTPUT
-          
-          # 生成矩阵
+          per_job=$(( (total + jobs - 1) / jobs ))   # 平均分配，向上取整
           arr="["
-          for ((i=0; i<total; i+=perjob)); do
-            arr="$arr$i,"
+          for ((i=0; i<total; i+=per_job)); do
+            arr="$arr\"$i\","
           done
           arr="${arr%,}]"
           echo "matrix=$arr" >> $GITHUB_OUTPUT
+          echo "per_job=$per_job" >> $GITHUB_OUTPUT
 
       - name: Upload all_ips.txt
         uses: actions/upload-artifact@v4
@@ -68,6 +64,7 @@ EOF <<< "$cidr"
     strategy:
       matrix:
         batch: ${{ fromJSON(needs.generate-matrix.outputs.matrix) }}
+      max-parallel: 20   # 限制最大并发 job 数量，避免过载
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
@@ -82,9 +79,9 @@ EOF <<< "$cidr"
       - name: Run IP test
         run: |
           start=$(date +%s)
-          python3 testcfips.py \
+          python test_cf_ips.py \
             --start ${{ matrix.batch }} \
-            --limit ${{ needs.generate-matrix.outputs.perjob }} \
+            --limit ${{ needs.generate-matrix.outputs.per_job }} \
             --interval ${{ github.event.inputs.interval }}
           end=$(date +%s)
           echo "${{ matrix.batch }} $((end-start)) 120" > job_time.txt
@@ -110,82 +107,56 @@ EOF <<< "$cidr"
 
       - name: Merge results
         run: |
-          mkdir -p merged
-          # 合并所有结果文件
-          for file in artifacts/results-*; do
-            if [ -d "$file" ]; then
-              cat "$file/blocked.txt" 2>/dev/null >> merged/blocked.txt || true
-              cat "$file/unblocked.txt" 2>/dev/null >> merged/unblocked.txt || true
-              cat "$file/curl_errors.log" 2>/dev/null >> merged/curl_errors.log || true
-              cat "$file/job_time.txt" 2>/dev/null >> merged/job_times.txt || true
-            fi
-          done
+          mkdir merged
+          cat artifacts/**/blocked.txt > merged/blocked.txt || true
+          cat artifacts/**/unblocked.txt > merged/unblocked.txt || true
+          cat artifacts/**/curl_errors.log > merged/curl_errors.log || true
+          cat artifacts/**/job_time.txt > merged/job_times.txt || true
 
       - name: Calculate summary with random samples and timing
         run: |
-          success=0
-          fail=0
-          totaltime=0
-          jobcount=0
-          
-          if [ -f merged/unblocked.txt ]; then
-            success=$(wc -l < merged/unblocked.txt)
-          fi
-          
-          if [ -f merged/blocked.txt ]; then
-            fail=$(wc -l < merged/blocked.txt)
-          fi
-          
-          total=$((success + fail))
-          
+          success=$(wc -l < merged/unblocked.txt || echo 0)
+          fail=$(wc -l < merged/blocked.txt || echo 0)
+          total=$((success+fail))
           if [ "$total" -gt 0 ]; then
-            rate=$(echo "scale=2; $success * 100 / $total" | bc)
+            rate=$(echo "scale=2; $success*100/$total" | bc)
           else
             rate=0
           fi
-          
-          if [ -f merged/job_times.txt ]; then
-            totaltime=$(awk '{sum+=$2} END {print sum}' merged/job_times.txt)
-            jobcount=$(wc -l < merged/job_times.txt)
-          fi
-          
-          if [ "$jobcount" -gt 0 ]; then
-            avgtime=$(echo "scale=2; $totaltime / $jobcount" | bc)
+
+          total_time=$(awk '{sum+=$2} END {print sum}' merged/job_times.txt)
+          job_count=$(wc -l < merged/job_times.txt)
+          if [ "$job_count" -gt 0 ]; then
+            avg_time=$(echo "scale=2; $total_time/$job_count" | bc)
           else
-            avgtime=0
+            avg_time=0
           fi
-          
+
           echo "### Cloudflare IP Test Summary" >> $GITHUB_STEP_SUMMARY
           echo "- 成功: $success" >> $GITHUB_STEP_SUMMARY
           echo "- 失败: $fail" >> $GITHUB_STEP_SUMMARY
           echo "- 总数: $total" >> $GITHUB_STEP_SUMMARY
           echo "- 成功率: $rate%" >> $GITHUB_STEP_SUMMARY
-          echo "- 总耗时: ${totaltime}s" >> $GITHUB_STEP_SUMMARY
-          echo "- 平均每个 job 耗时: ${avgtime}s" >> $GITHUB_STEP_SUMMARY
+          echo "- 总耗时: ${total_time}s" >> $GITHUB_STEP_SUMMARY
+          echo "- 平均每个 job 耗时: ${avg_time}s" >> $GITHUB_STEP_SUMMARY
           echo "- 总 job 数量: ${{ github.event.inputs.jobs }}" >> $GITHUB_STEP_SUMMARY
-          echo "- 平均每个 job 测试 IP 数: ${{ needs.generate-matrix.outputs.perjob }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 平均每个 job 测试 IP 数: ${{ needs.generate-matrix.outputs.per_job }}" >> $GITHUB_STEP_SUMMARY
           echo "- 参数 interval: ${{ github.event.inputs.interval }}" >> $GITHUB_STEP_SUMMARY
 
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "#### 每个 job 耗时分布 (含限制值)" >> $GITHUB_STEP_SUMMARY
-          
-          if [ -f merged/job_times.txt ]; then
-            awk '{printf "- 起始索引 %s: %ss (限制 %s 分钟)\n", $1, $2, $3}' merged/job_times.txt >> $GITHUB_STEP_SUMMARY
-          else
-            echo "无耗时数据" >> $GITHUB_STEP_SUMMARY
-          fi
+          awk '{printf "- 起始索引 %s: %ss (限制 %s 分钟)\n",$1,$2,$3}' merged/job_times.txt >> $GITHUB_STEP_SUMMARY
 
-          if [ "$success" -gt 0 ] && [ -f merged/unblocked.txt ]; then
+          if [ "$success" -gt 0 ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "#### 随机成功 IP 示例 (最多 10 个)" >> $GITHUB_STEP_SUMMARY
-            shuf -n 10 merged/unblocked.txt >> $GITHUB_STEP_SUMMARY || echo "无法获取成功 IP 示例" >> $GITHUB_STEP_SUMMARY
+            shuf -n 10 merged/unblocked.txt >> $GITHUB_STEP_SUMMARY
           fi
 
-          if [ "$fail" -gt 0 ] && [ -f merged/blocked.txt ]; then
+          if [ "$fail" -gt 0 ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "#### 随机失败 IP 示例 (最多 10 个)" >> $GITHUB_STEP_SUMMARY
-            shuf -n 10 merged/blocked.txt >> $GITHUB_STEP_SUMMARY || echo "无法获取失败 IP 示例" >> $GITHUB_STEP_SUMMARY
-          fi
+            shuf -n 10 merged/blocked.txt >> $GITHUB_STEP_SUMMARY
 
       - name: Upload merged results
         uses: actions/upload-artifact@v4
