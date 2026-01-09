@@ -18,6 +18,27 @@ async def fetch_ips(url):
             text = await resp.text()
             return text.strip().splitlines()
 
+async def test_proxy():
+    """测试代理是否可用（使用百度 URL）"""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "curl","-s","-o","/dev/null","-w","%{http_code}",
+            "http://www.baidu.com","--max-time",str(TIMEOUT),
+            "-x", PROXY_URL,
+            stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        code = stdout.decode().strip()
+        if code == "200":
+            print(f"[INFO] 代理可用 (返回码 {code})")
+            return True
+        else:
+            print(f"[WARN] 代理不可用 (返回码 {code}, 错误: {stderr.decode().strip()})")
+            return False
+    except Exception as e:
+        print(f"[ERROR] 代理测试异常: {e}")
+        return False
+
 async def test_ip(ip, use_proxy=True):
     try:
         cmd = [
@@ -43,6 +64,10 @@ async def test_ip(ip, use_proxy=True):
         return ip, False, f"Exception: {e}"
 
 async def main(start_idx, count, refresh_interval, limit, use_proxy):
+    # ✅ 启动时测试代理
+    if use_proxy:
+        await test_proxy()
+
     v4_cidrs = await fetch_ips(CF_IPS_V4)
     selected_cidrs = v4_cidrs[start_idx:start_idx+count]
 
