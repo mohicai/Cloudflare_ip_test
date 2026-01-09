@@ -55,12 +55,12 @@ jobs:
           for cidr in ${{ join(matrix.job, ' ') }}; do
             echo "$cidr" >> cidrs_part.txt
           done
-          python test_cf_ips.py --cidr-file cidrs_part.txt --limit 500 --interval ${{ github.event.inputs.interval }}
+          python test_cf_ips.py --cidr-file cidrs_part.txt --limit all --interval ${{ github.event.inputs.interval }}
 
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
-          name: results-${{ matrix.job }}
+          name: results-${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
           path: |
             blocked.txt
             unblocked.txt
@@ -79,44 +79,15 @@ jobs:
 
       - name: Merge results
         run: |
-          mkdir merged
+          mkdir -p merged
           cat artifacts/**/blocked.txt > merged/blocked.txt || true
           cat artifacts/**/unblocked.txt > merged/unblocked.txt || true
           cat artifacts/**/curl_errors.log > merged/curl_errors.log || true
-
-      - name: Summary
-        run: |
-          success=$(wc -l < merged/unblocked.txt || echo 0)
-          fail=$(wc -l < merged/blocked.txt || echo 0)
-          total=$((success+fail))
-          if [ "$total" -gt 0 ]; then
-            rate=$(echo "scale=2; $success*100/$total" | bc)
-          else
-            rate=0
-          fi
-
-          echo "### Cloudflare IP Test Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- 成功: $success" >> $GITHUB_STEP_SUMMARY
-          echo "- 失败: $fail" >> $GITHUB_STEP_SUMMARY
-          echo "- 总数: $total" >> $GITHUB_STEP_SUMMARY
-          echo "- 成功率: $rate%" >> $GITHUB_STEP_SUMMARY
-
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "#### 随机成功 IP 示例" >> $GITHUB_STEP_SUMMARY
-          shuf -n 10 merged/unblocked.txt >> $GITHUB_STEP_SUMMARY || true
-
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "#### 随机失败 IP 示例" >> $GITHUB_STEP_SUMMARY
-          shuf -n 10 merged/blocked.txt >> $GITHUB_STEP_SUMMARY || true
-
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "#### 随机错误日志样本" >> $GITHUB_STEP_SUMMARY
-          shuf -n 5 merged/curl_errors.log >> $GITHUB_STEP_SUMMARY || true
 
       - name: Commit results to master
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add merged/blocked.txt merged/unblocked.txt merged/curl_errors.log
-          git commit -m "Update Cloudflare IP test results"
+          git commit -m "Update Cloudflare IP test results" || echo "No changes"
           git push origin master
