@@ -15,6 +15,10 @@ on:
         description: "测试ip数量 (个)"
         required: true
         default: "all"
+      proxy:
+        description: "默认使用代理，不使用填：--no-proxy"
+        required: true
+        default: ""
 permissions:
   contents: write
         
@@ -61,7 +65,7 @@ jobs:
           for cidr in ${{ join(matrix.job, ' ') }}; do
             echo "$cidr" >> cidrs_part.txt
           done
-          python test_cf_ips.py --cidr-file cidrs_part.txt --limit ${{ github.event.inputs.limit }} --interval ${{ github.event.inputs.interval }}
+          python test_cf_ips.py --cidr-file cidrs_part.txt --limit ${{ github.event.inputs.limit }} --interval ${{ github.event.inputs.interval }} ${{ github.event.inputs.proxy }}
 
       - name: Upload results
         uses: actions/upload-artifact@v4
