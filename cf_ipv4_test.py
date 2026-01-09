@@ -3,15 +3,15 @@ import asyncio
 import ipaddress
 import time
 import random
+import argparse
 from tqdm import tqdm
 
 CF_IPS_V4 = "https://www.cloudflare.com/ips-v4"
-PROXY_URL = "http://f2O9Sw2sqd:zbZEBEqbho@120.230.229.77:35831"
+PROXY_URL = "http://f2O9Sw2sqd:zbZEBEqbho@120.230.229.77:35931"
 
 TIMEOUT = 3
 CONCURRENCY = 50
 MAX_IPS = 1000
-REFRESH_INTERVAL = 5   # 刷新间隔（秒），可改成 10、30 等
 
 
 async def fetch_ips(url):
@@ -69,7 +69,7 @@ async def test_ip(ip):
         return ip, False, f"Exception: {e}"
 
 
-async def main():
+async def main(start_idx, count, refresh_interval):
     start_time = time.time()
 
     proxy_ok = await test_proxy()
@@ -80,9 +80,13 @@ async def main():
     v4_cidrs = await fetch_ips(CF_IPS_V4)
     print(f"[INFO] 获取到 {len(v4_cidrs)} 个 IPv4 段")
 
+    # 只取指定范围的段
+    selected_cidrs = v4_cidrs[start_idx : start_idx + count]
+    print(f"[INFO] 本次测试 {len(selected_cidrs)} 个 IP 段 (索引 {start_idx} ~ {start_idx+count-1})")
+
     all_ips = []
     ip_count = 0
-    for cidr in v4_cidrs:
+    for cidr in selected_cidrs:
         if ip_count >= MAX_IPS:
             break
         net = ipaddress.ip_network(cidr)
@@ -92,7 +96,7 @@ async def main():
             all_ips.append(str(ip))
             ip_count += 1
 
-    print(f"[INFO] 总共测试 {len(all_ips)} 个 IP（前 {MAX_IPS} 个）")
+    print(f"[INFO] 总共测试 {len(all_ips)} 个 IP（限制 {MAX_IPS} 个）")
 
     sem = asyncio.Semaphore(CONCURRENCY)
 
@@ -132,11 +136,11 @@ async def main():
                 error_log.write(f"{ip} -> {err}\n")
                 error_log.flush()
 
-        # 每隔 REFRESH_INTERVAL 秒刷新一次进度条
+        # 每隔 refresh_interval 秒刷新一次进度条
         now = time.time()
-        if now - last_refresh >= REFRESH_INTERVAL:
+        if now - last_refresh >= refresh_interval:
             rate = success / (success + fail) * 100
-            pbar.update(idx - pbar.n)  # 更新到当前进度
+            pbar.update(idx - pbar.n)
             pbar.set_description(f"成功: {success} | 失败: {fail} | 成功率: {rate:.2f}%")
             last_refresh = now
 
@@ -163,4 +167,10 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--start", type=int, default=0, help="起始段索引")
+    parser.add_argument("--count", type=int, default=2, help="测试段数量")
+    parser.add_argument("--interval", type=int, default=5, help="进度条刷新间隔（秒）")
+    args = parser.parse_args()
+
+    asyncio.run(main(args.start, args.count, args.interval))
