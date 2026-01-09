@@ -52,7 +52,7 @@ jobs:
           for cidr in ${{ join(matrix.job, ' ') }}; do
             echo "$cidr" >> cidrs_part.txt
           done
-          python test_cf_ips.py --cidr-file --limit all cidrs_part.txt --interval ${{ github.event.inputs.interval }}
+          python test_cf_ips.py --cidr-file  cidrs_part.txt --limit all --interval ${{ github.event.inputs.interval }}
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
