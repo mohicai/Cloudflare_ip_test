@@ -24,15 +24,9 @@ jobs:
         id: fetch
         run: |
           curl -s https://www.cloudflare.com/ips-v4 > ips.txt
-          # 展开所有 IP 到 all_ips.txt
           > all_ips.txt
           while read cidr; do
-            python - <<'EOF' >> all_ips.txt
-import ipaddress, sys
-net = ipaddress.ip_network(cidr.strip())
-for ip in net.hosts():
-    print(ip)
-EOF
+            python -c "import ipaddress; net=ipaddress.ip_network('$cidr'); [print(ip) for ip in net.hosts()]" >> all_ips.txt
           done < ips.txt
           count=$(wc -l < all_ips.txt | tr -d '[:space:]')
           echo "total=$count" >> $GITHUB_ENV
@@ -42,7 +36,7 @@ EOF
         run: |
           total=${{ env.total }}
           jobs=${{ github.event.inputs.jobs }}
-          per_job=$(( (total + jobs - 1) / jobs ))   # 平均分配，向上取整
+          per_job=$(( (total + jobs - 1) / jobs ))
           arr="["
           for ((i=0; i<total; i+=per_job)); do
             arr="$arr\"$i\","
@@ -64,7 +58,7 @@ EOF
     strategy:
       matrix:
         batch: ${{ fromJSON(needs.generate-matrix.outputs.matrix) }}
-      max-parallel: 20   # 限制最大并发 job 数量，避免过载
+      max-parallel: 20
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
