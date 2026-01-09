@@ -37,7 +37,7 @@ password   = os.environ.get("PROXY_PASSWORD")
 PROXY_URL = resolve_proxy(domain_url, username, password)
 
 print("PROXY_URL:")
-print(PROXY_URL)
+print(domain_url)
 
 TIMEOUT = 3
 CONCURRENCY = 50
