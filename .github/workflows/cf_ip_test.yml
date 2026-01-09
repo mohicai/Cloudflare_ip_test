@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       jobs:
-        description: "总 job 数量 (输入数字)"
+        description: "总 job 数量 (输入数字，最大 256)"
         required: true
         default: "50"
       interval:
@@ -20,22 +20,21 @@ jobs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
       per_job: ${{ steps.set-matrix.outputs.per_job }}
     steps:
-      - name: Fetch Cloudflare IPs
+      - name: Fetch Cloudflare CIDRs
         id: fetch
         run: |
-          curl -s https://www.cloudflare.com/ips-v4 > ips.txt
-          > all_ips.txt
-          while read cidr; do
-            python -c "import ipaddress; net=ipaddress.ip_network('$cidr'); [print(ip) for ip in net.hosts()]" >> all_ips.txt
-          done < ips.txt
-          count=$(wc -l < all_ips.txt | tr -d '[:space:]')
-          echo "total=$count" >> $GITHUB_ENV
+          curl -s https://www.cloudflare.com/ips-v4 > cidrs.txt
+          total=$(wc -l < cidrs.txt | tr -d '[:space:]')
+          echo "total=$total" >> $GITHUB_ENV
 
       - name: Generate matrix JSON
         id: set-matrix
         run: |
           total=${{ env.total }}
           jobs=${{ github.event.inputs.jobs }}
+          if [ "$jobs" -gt 256 ]; then
+            jobs=256
+          fi
           per_job=$(( (total + jobs - 1) / jobs ))
           arr="["
           for ((i=0; i<total; i+=per_job)); do
@@ -45,11 +44,11 @@ jobs:
           echo "matrix=$arr" >> $GITHUB_OUTPUT
           echo "per_job=$per_job" >> $GITHUB_OUTPUT
 
-      - name: Upload all_ips.txt
+      - name: Upload cidrs.txt
         uses: actions/upload-artifact@v4
         with:
-          name: all-ips
-          path: all_ips.txt
+          name: all-cidrs
+          path: cidrs.txt
 
   test:
     needs: generate-matrix
@@ -65,17 +64,17 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install aiohttp tqdm
-      - name: Download all_ips.txt
+      - name: Download cidrs.txt
         uses: actions/download-artifact@v4
         with:
-          name: all-ips
+          name: all-cidrs
           path: .
       - name: Run IP test
         run: |
           start=$(date +%s)
+          sed -n "$(( ${{ matrix.batch }} + 1 )),$(( ${{ matrix.batch }} + ${{ needs.generate-matrix.outputs.per_job }} ))p" cidrs.txt > cidrs_part.txt
           python test_cf_ips.py \
-            --start ${{ matrix.batch }} \
-            --limit ${{ needs.generate-matrix.outputs.per_job }} \
+            --cidr-file cidrs_part.txt \
             --interval ${{ github.event.inputs.interval }}
           end=$(date +%s)
           echo "${{ matrix.batch }} $((end-start)) 120" > job_time.txt
@@ -134,7 +133,7 @@ jobs:
           echo "- 总耗时: ${total_time}s" >> $GITHUB_STEP_SUMMARY
           echo "- 平均每个 job 耗时: ${avg_time}s" >> $GITHUB_STEP_SUMMARY
           echo "- 总 job 数量: ${{ github.event.inputs.jobs }}" >> $GITHUB_STEP_SUMMARY
-          echo "- 平均每个 job 测试 IP 数: ${{ needs.generate-matrix.outputs.per_job }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 平均每个 job 测试 CIDR 数: ${{ needs.generate-matrix.outputs.per_job }}" >> $GITHUB_STEP_SUMMARY
           echo "- 参数 interval: ${{ github.event.inputs.interval }}" >> $GITHUB_STEP_SUMMARY
 
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -151,6 +150,11 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "#### 随机失败 IP 示例 (最多 10 个)" >> $GITHUB_STEP_SUMMARY
             shuf -n 10 merged/blocked.txt >> $GITHUB_STEP_SUMMARY
+
+          if [ -s merged/curl_errors.log ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "#### 随机错误日志样本 (最多 5 条)" >> $GITHUB_STEP_SUMMARY
+            shuf -n 5 merged/curl_errors.log >> $GITHUB_STEP_SUMMARY
 
       - name: Upload merged results
         uses: actions/upload-artifact@v4

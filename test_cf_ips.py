@@ -1,22 +1,14 @@
 import argparse
-import aiohttp
 import asyncio
 import ipaddress
 import time
 import random
 from tqdm import tqdm
 
-CF_IPS_V4 = "https://www.cloudflare.com/ips-v4"
 PROXY_URL = "http://f2O9Sw2sqd:zbZEBEqbho@120.230.229.77:35831"
 
 TIMEOUT = 3
 CONCURRENCY = 50
-
-async def fetch_ips(url):
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            text = await resp.text()
-            return text.strip().splitlines()
 
 async def test_proxy():
     """测试代理是否可用（使用百度 URL）"""
@@ -46,7 +38,7 @@ async def test_ip(ip, use_proxy=True):
             f"http://{ip}","--max-time",str(TIMEOUT)
         ]
         if use_proxy:
-            cmd.extend(["-x", PROXY_URL])  # ✅ 选择性走代理
+            cmd.extend(["-x", PROXY_URL])
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -63,16 +55,17 @@ async def test_ip(ip, use_proxy=True):
     except Exception as e:
         return ip, False, f"Exception: {e}"
 
-async def main(start_idx, count, refresh_interval, limit, use_proxy):
+async def main(cidr_file, refresh_interval, limit, use_proxy):
     # ✅ 启动时测试代理
     if use_proxy:
         await test_proxy()
 
-    v4_cidrs = await fetch_ips(CF_IPS_V4)
-    selected_cidrs = v4_cidrs[start_idx:start_idx+count]
+    # 从 workflow 提供的文件读取 CIDR 段
+    with open(cidr_file) as f:
+        cidrs = [line.strip() for line in f if line.strip()]
 
     all_ips = []
-    for cidr in selected_cidrs:
+    for cidr in cidrs:
         net = ipaddress.ip_network(cidr)
         for ip in net.hosts():
             all_ips.append(str(ip))
@@ -82,7 +75,7 @@ async def main(start_idx, count, refresh_interval, limit, use_proxy):
         all_ips = all_ips[:max_ips]
 
     total_tasks = len(all_ips)
-    print(f"[INFO] 本次测试 {total_tasks} 个 IP (段索引 {start_idx}~{start_idx+count-1}, limit={limit}, proxy={'ON' if use_proxy else 'OFF'})")
+    print(f"[INFO] 本次测试 {total_tasks} 个 IP (CIDR 段数 {len(cidrs)}, limit={limit}, proxy={'ON' if use_proxy else 'OFF'})")
 
     sem = asyncio.Semaphore(CONCURRENCY)
     async def sem_test(ip):
@@ -92,7 +85,7 @@ async def main(start_idx, count, refresh_interval, limit, use_proxy):
     tasks = [sem_test(ip) for ip in all_ips]
 
     success, fail = 0, 0
-    unblocked_list, blocked_list = [], []
+    unblocked_list, blocked_list, error_list = [], [], []
     last_refresh = time.time()
     start_time = time.time()
     pbar = tqdm(total=total_tasks, desc="测试进度", dynamic_ncols=True)
@@ -105,6 +98,7 @@ async def main(start_idx, count, refresh_interval, limit, use_proxy):
         else:
             fail += 1
             blocked_list.append(ip)
+            error_list.append(f"{ip}: {err}")
 
         now = time.time()
         if now - last_refresh >= refresh_interval:
@@ -128,12 +122,19 @@ async def main(start_idx, count, refresh_interval, limit, use_proxy):
     if blocked_list:
         print("\n随机失败样本:", ", ".join(random.sample(blocked_list, min(10,len(blocked_list)))))
 
+    # ✅ 输出结果文件，供 workflow 汇总
+    with open("blocked.txt", "w") as f:
+        f.write("\n".join(blocked_list))
+    with open("unblocked.txt", "w") as f:
+        f.write("\n".join(unblocked_list))
+    with open("curl_errors.log", "w") as f:
+        f.write("\n".join(error_list))
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--start", type=int, default=0)
-    parser.add_argument("--count", type=int, default=2)
+    parser.add_argument("--cidr-file", required=True, help="CIDR 段文件 (workflow 提供)")
     parser.add_argument("--interval", type=int, default=5)
     parser.add_argument("--limit", default="1000", help="测试数量 (数字 或 all)")
     parser.add_argument("--no-proxy", action="store_true", help="禁用代理测试")
     args = parser.parse_args()
-    asyncio.run(main(args.start, args.count, args.interval, args.limit, not args.no_proxy))
+    asyncio.run(main(args.cidr_file, args.interval, args.limit, not args.no_proxy))
