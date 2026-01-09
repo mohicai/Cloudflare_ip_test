@@ -6,7 +6,7 @@ on:
       jobs:
         description: "总 job 数量 (输入数字，最大 256)"
         required: true
-        default: "25"
+        default: "20"
       interval:
         description: "进度条刷新间隔 (秒)"
         required: true
@@ -33,6 +33,15 @@ jobs:
         with:
           name: cidr-assignments
           path: assignments.json
+      - name: Upload job summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-summary
+          path: job_summary.txt
+      - name: Print job summary
+        run: |
+          echo "### CIDR 分配详情" >> $GITHUB_STEP_SUMMARY
+          cat job_summary.txt >> $GITHUB_STEP_SUMMARY
 
   test:
     needs: generate-matrix
@@ -52,7 +61,7 @@ jobs:
           for cidr in ${{ join(matrix.job, ' ') }}; do
             echo "$cidr" >> cidrs_part.txt
           done
-          python test_cf_ips.py --cidr-file  cidrs_part.txt --limit all --interval ${{ github.event.inputs.interval }}
+          python test_cf_ips.py --cidr-file cidrs_part.txt --limit all --interval ${{ github.event.inputs.interval }}
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
