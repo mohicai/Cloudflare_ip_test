@@ -4,9 +4,34 @@ import ipaddress
 import time
 from tqdm import tqdm
 
-PROXY_URL = "http://f2O9Sw2sqd:zbZEBEqbho@120.230.229.77:35831"  # ⚠️替换成你的代理
+PROXY_URL = "http://user:pass@host:port"  # ⚠️替换成你的代理
 TIMEOUT = 3
 CONCURRENCY = 50
+
+async def test_proxy():
+    """测试代理是否能正常访问百度"""
+    try:
+        cmd = [
+            "curl","-s","-o","/dev/null","-w","%{http_code}",
+            "https://www.baidu.com","--max-time",str(TIMEOUT),
+            "-x", PROXY_URL
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        code = stdout.decode().strip()
+        if code == "200":
+            print("[INFO] 代理可用，成功访问百度")
+            return True
+        else:
+            print(f"[ERROR] 代理不可用，返回码 {code}")
+            return False
+    except Exception as e:
+        print(f"[ERROR] 代理测试异常: {e}")
+        return False
 
 async def test_ip(ip, use_proxy=True):
     try:
@@ -32,6 +57,13 @@ async def test_ip(ip, use_proxy=True):
         return ip, False, f"Exception: {e}"
 
 async def main(cidr_file, refresh_interval, limit, use_proxy):
+    # 先测试代理
+    if use_proxy:
+        ok = await test_proxy()
+        if not ok:
+            print("[FATAL] 代理不可用，退出测试")
+            return
+
     # 从文件读取 CIDR 段
     with open(cidr_file) as f:
         cidrs = [line.strip() for line in f if line.strip()]
@@ -72,7 +104,7 @@ async def main(cidr_file, refresh_interval, limit, use_proxy):
             errors.append(f"{ip}: {err}")
         done_count += 1
 
-        # 每隔 refresh_interval 秒刷新一次进度条和 ETA
+        # 每隔 refresh_interval 秒刷新一次 ETA
         now = time.time()
         if now - last_refresh >= refresh_interval or idx == total_tasks:
             elapsed = now - start_time
@@ -80,7 +112,6 @@ async def main(cidr_file, refresh_interval, limit, use_proxy):
             remaining = total_tasks - idx
             eta = remaining / ips_per_sec if ips_per_sec > 0 else 0
 
-            # 更新进度条位置和附加信息
             pbar.n = idx
             pbar.refresh()
             pbar.set_postfix({
