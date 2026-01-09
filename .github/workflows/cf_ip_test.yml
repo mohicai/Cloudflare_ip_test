@@ -27,16 +27,15 @@ jobs:
         id: split
         run: |
           python split_cidrs.py --jobs ${{ github.event.inputs.jobs }} > assignments.json
-          echo "matrix=$(cat assignments.json)" >> $GITHUB_OUTPUT
-      - name: Upload assignments
+          echo "matrix=$(cat assignments.json)" >> $GITHUB: Upload assignments
         uses: actions/upload-artifact@v4
         with:
-          name: cidr-assignments
+          name: cidr-assignments-${{ github.run_id }}
           path: assignments.json
       - name: Upload job summary
         uses: actions/upload-artifact@v4
         with:
-          name: job-summary
+          name: job-summary-${{ github.run_id }}
           path: job_summary.txt
       - name: Print job summary
         run: |
@@ -65,7 +64,7 @@ jobs:
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
-          name: results-${{ matrix.job }}
+          name: results-${{ matrix.job }}-${{ github.run_id }}
           path: |
             blocked.txt
             unblocked.txt
