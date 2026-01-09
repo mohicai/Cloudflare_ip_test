@@ -15,6 +15,7 @@ on:
 jobs:
   generate-matrix:
     runs-on: ubuntu-latest
+    timeout-minutes: 30   # 限制 30 分钟
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
@@ -40,6 +41,7 @@ jobs:
   test:
     needs: generate-matrix
     runs-on: ubuntu-latest
+    timeout-minutes: 120   # 每个 job 限制 120 分钟
     strategy:
       matrix:
         batch: ${{ fromJSON(needs.generate-matrix.outputs.matrix) }}
@@ -58,7 +60,7 @@ jobs:
             --interval ${{ github.event.inputs.interval }} \
             --limit ${{ github.event.inputs.limit }}
           end=$(date +%s)
-          echo "${{ matrix.batch }} $((end-start))" > job_time.txt
+          echo "${{ matrix.batch }} $((end-start)) 120" > job_time.txt
       - name: Upload partial results
         uses: actions/upload-artifact@v3
         with:
@@ -72,6 +74,7 @@ jobs:
   merge-results:
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 30   # 限制 30 分钟
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v3
@@ -116,8 +119,8 @@ jobs:
           echo "- 参数 interval: ${{ github.event.inputs.interval }}" >> $GITHUB_STEP_SUMMARY
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "#### 每个 job 耗时分布" >> $GITHUB_STEP_SUMMARY
-          awk '{printf "- 段索引 %s: %ss\n",$1,$2}' merged/job_times.txt >> $GITHUB_STEP_SUMMARY
+          echo "#### 每个 job 耗时分布 (含限制值)" >> $GITHUB_STEP_SUMMARY
+          awk '{printf "- 段索引 %s: %ss (限制 %s 分钟)\n",$1,$2,$3}' merged/job_times.txt >> $GITHUB_STEP_SUMMARY
 
           if [ "$success" -gt 0 ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
