@@ -1,9 +1,9 @@
+import argparse
 import aiohttp
 import asyncio
 import ipaddress
 import time
 import random
-import argparse
 from tqdm import tqdm
 
 CF_IPS_V4 = "https://www.cloudflare.com/ips-v4"
@@ -11,8 +11,6 @@ PROXY_URL = "http://f2O9Sw2sqd:zbZEBEqbho@120.230.229.77:35831"
 
 TIMEOUT = 3
 CONCURRENCY = 50
-MAX_IPS = 1000
-
 
 async def fetch_ips(url):
     async with aiohttp.ClientSession() as session:
@@ -20,157 +18,81 @@ async def fetch_ips(url):
             text = await resp.text()
             return text.strip().splitlines()
 
-
-async def test_proxy():
-    print("[INFO] 正在测试代理连通性...")
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://www.cloudflare.com",
-                proxy=PROXY_URL,
-                timeout=TIMEOUT,
-                ssl=False
-            ) as resp:
-                if resp.status == 200:
-                    print("[INFO] 代理可用，返回状态码 200")
-                    return True
-                else:
-                    print(f"[WARN] 代理返回状态码 {resp.status}")
-                    return False
-    except Exception as e:
-        print(f"[ERROR] 代理不可用: {e}")
-        return False
-
-
 async def test_ip(ip):
-    """curl 测试 + 捕获错误日志"""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "curl",
-            "-s",
-            "-o", "/dev/null",
-            "-w", "%{http_code}",
-            f"http://{ip}",
-            "--max-time", str(TIMEOUT),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            "curl","-s","-o","/dev/null","-w","%{http_code}",
+            f"http://{ip}","--max-time",str(TIMEOUT),
+            stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE
         )
         stdout, stderr = await proc.communicate()
-
         code = stdout.decode().strip()
         err = stderr.decode().strip()
-
         if code and code != "000":
             return ip, True, err
         else:
             return ip, False, err or "No response"
-
     except Exception as e:
         return ip, False, f"Exception: {e}"
 
-
-async def main(start_idx, count, refresh_interval):
-    start_time = time.time()
-
-    proxy_ok = await test_proxy()
-    if not proxy_ok:
-        print("[FATAL] 代理不可用，退出程序")
-        return
-
+async def main(start_idx, count, refresh_interval, limit):
     v4_cidrs = await fetch_ips(CF_IPS_V4)
-    print(f"[INFO] 获取到 {len(v4_cidrs)} 个 IPv4 段")
-
-    # 只取指定范围的段
-    selected_cidrs = v4_cidrs[start_idx : start_idx + count]
-    print(f"[INFO] 本次测试 {len(selected_cidrs)} 个 IP 段 (索引 {start_idx} ~ {start_idx+count-1})")
+    selected_cidrs = v4_cidrs[start_idx:start_idx+count]
 
     all_ips = []
-    ip_count = 0
     for cidr in selected_cidrs:
-        if ip_count >= MAX_IPS:
-            break
         net = ipaddress.ip_network(cidr)
         for ip in net.hosts():
-            if ip_count >= MAX_IPS:
-                break
             all_ips.append(str(ip))
-            ip_count += 1
 
-    print(f"[INFO] 总共测试 {len(all_ips)} 个 IP（限制 {MAX_IPS} 个）")
+    if limit != "all":
+        max_ips = int(limit)
+        all_ips = all_ips[:max_ips]
+
+    print(f"[INFO] 本次测试 {len(all_ips)} 个 IP (段索引 {start_idx}~{start_idx+count-1}, limit={limit})")
 
     sem = asyncio.Semaphore(CONCURRENCY)
-
     async def sem_test(ip):
         async with sem:
             return await test_ip(ip)
 
     tasks = [sem_test(ip) for ip in all_ips]
 
-    blocked_file = open("blocked.txt", "a")
-    unblocked_file = open("unblocked.txt", "a")
-    error_log = open("curl_errors.log", "a")
-
-    success = 0
-    fail = 0
+    success, fail = 0, 0
+    unblocked_list, blocked_list = [], []
     last_refresh = time.time()
-
-    unblocked_list = []
-    blocked_list = []
-
     pbar = tqdm(total=len(tasks), desc="测试进度", dynamic_ncols=True)
 
     for idx, f in enumerate(asyncio.as_completed(tasks), 1):
         ip, ok, err = await f
-
         if ok:
             success += 1
-            unblocked_file.write(ip + "\n")
-            unblocked_file.flush()
             unblocked_list.append(ip)
         else:
             fail += 1
-            blocked_file.write(ip + "\n")
-            blocked_file.flush()
             blocked_list.append(ip)
-            if err:
-                error_log.write(f"{ip} -> {err}\n")
-                error_log.flush()
 
-        # 每隔 refresh_interval 秒刷新一次进度条
         now = time.time()
         if now - last_refresh >= refresh_interval:
-            rate = success / (success + fail) * 100
+            rate = success/(success+fail)*100 if (success+fail)>0 else 0
             pbar.update(idx - pbar.n)
-            pbar.set_description(f"成功: {success} | 失败: {fail} | 成功率: {rate:.2f}%")
+            pbar.set_description(f"成功:{success} 失败:{fail} 成功率:{rate:.2f}%")
             last_refresh = now
 
-    pbar.update(len(tasks) - pbar.n)
+    pbar.update(len(tasks)-pbar.n)
     pbar.close()
 
-    blocked_file.close()
-    unblocked_file.close()
-    error_log.close()
-
-    print(f"\n[SUMMARY] 测试完成，用时 {time.time() - start_time:.2f} 秒")
-    print(f"[SUMMARY] 成功: {success} 失败: {fail} 成功率: {success/(success+fail)*100:.2f}%")
-    print("[INFO] 结果已实时写入 blocked.txt / unblocked.txt / curl_errors.log")
-
+    print(f"\n[SUMMARY] 成功:{success} 失败:{fail} 成功率:{success/(success+fail)*100:.2f}%")
     if unblocked_list:
-        sample_success = random.sample(unblocked_list, min(10, len(unblocked_list)))
-        print(f"\n[INFO] 随机成功 IP 示例（共 {len(unblocked_list)} 个）：")
-        print(", ".join(sample_success))
-
+        print("\n随机成功样本:", ", ".join(random.sample(unblocked_list, min(10,len(unblocked_list)))))
     if blocked_list:
-        sample_fail = random.sample(blocked_list, min(10, len(blocked_list)))
-        print(f"\n[INFO] 随机失败 IP 示例（共 {len(blocked_list)} 个）：")
-        print(", ".join(sample_fail))
-
+        print("\n随机失败样本:", ", ".join(random.sample(blocked_list, min(10,len(blocked_list)))))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--start", type=int, default=0, help="起始段索引")
-    parser.add_argument("--count", type=int, default=2, help="测试段数量")
-    parser.add_argument("--interval", type=int, default=5, help="进度条刷新间隔（秒）")
+    parser.add_argument("--start", type=int, default=0)
+    parser.add_argument("--count", type=int, default=2)
+    parser.add_argument("--interval", type=int, default=5)
+    parser.add_argument("--limit", default="1000", help="测试数量 (数字 或 all)")
     args = parser.parse_args()
-
-    asyncio.run(main(args.start, args.count, args.interval))
+    asyncio.run(main(args.start, args.count, args.interval, args.limit))
